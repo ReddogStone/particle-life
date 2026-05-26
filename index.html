@@ -51,10 +51,50 @@
       pointer-events: none;
     }
 
+    #controls {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 12px;
+      z-index: 15;
+    }
+
+    #controls button {
+      font: 600 14px ui-monospace, Menlo, monospace;
+      color: #eef;
+      background: rgba(20, 24, 40, 0.85);
+      border: 1px solid #46506e;
+      border-radius: 8px;
+      padding: 11px 20px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.05s;
+    }
+
+    #controls button:hover {
+      background: rgba(40, 48, 78, 0.95);
+      border-color: #6a78a8;
+    }
+
+    #controls button:active {
+      transform: translateY(1px);
+    }
+
+    #btn-record {
+      color: #ffdde9;
+      border-color: #a23a5e;
+    }
+
+    #btn-record:hover {
+      background: rgba(80, 24, 44, 0.9);
+      border-color: #ff4f86;
+    }
+
     #help {
       position: fixed;
-      bottom: 12px;
-      left: 12px;
+      top: 12px;
+      right: 12px;
       padding: 10px 14px;
       background: rgba(0, 0, 0, 0.55);
       color: #cde;
@@ -66,12 +106,16 @@
       transition: opacity 0.4s;
     }
 
+    #help b {
+      color: #fff;
+    }
+
     #help kbd {
       display: inline-block;
       min-width: 1.1em;
       text-align: center;
       padding: 1px 6px;
-      margin-right: 6px;
+      margin-right: 4px;
       background: #223;
       border: 1px solid #445;
       border-radius: 4px;
@@ -98,13 +142,19 @@
   <input type="file" id="music-input" accept="audio/*" style="display:none">
   <div id="progress"></div>
   <div id="fps">— fps</div>
-  <div id="help">
-    <div><kbd>R</kbd> new random ecosystem</div>
-    <div><kbd>S</kbd> save this run (JSON)</div>
-    <div><kbd>L</kbd> load a run &amp; record an MP4</div>
-    <div><kbd>M</kbd> load a music track</div>
-    <div class="note">Recording (MP4 export) needs Chrome or Edge. The live view works in any modern browser. Move the mouse to reveal this help.</div>
+
+  <div id="controls">
+    <button id="btn-new" type="button">✨ New</button>
+    <button id="btn-record" type="button">● Record</button>
   </div>
+
+  <div id="help">
+    <div><b>New</b> — fresh ecosystem (or press <kbd>R</kbd>)</div>
+    <div><b>Record</b> — save the run so far as a 1024×1024 video</div>
+    <div><kbd>M</kbd> load a music track first (optional)</div>
+    <div class="note">Recording needs Chrome or Edge. Move the mouse to show this help.</div>
+  </div>
+
   <script>
     // Fade the help overlay out after a few seconds; reveal on mouse move.
     (() => {
@@ -120,7 +170,7 @@
     })();
   </script>
   <script>
-(() => {
+    (() => {
   // lib/audio.js
   var MIN_SOUND_GAP = 0.04;
   var VOICES = {
@@ -611,6 +661,11 @@
     music = null,
     fps = 60,
     playbackSpeed = 1,
+    // Device-pixel multiplier for the output. Defaults to the viewer's DPR
+    // (clamped) so screen-sized recordings stay crisp. Pass dpr: 1 to get an
+    // output that is exactly json.width × json.height device pixels regardless
+    // of the viewer's screen.
+    dpr = Math.min(window.devicePixelRatio || 1, 2),
     onProgress = () => {
     }
   }) {
@@ -624,7 +679,7 @@
     if (!seed || !duration || !width || !height) {
       throw new Error("Invalid run JSON.");
     }
-    const DPR2 = Math.min(window.devicePixelRatio || 1, 2);
+    const DPR2 = dpr;
     const ctx2 = canvas2.getContext("2d", { alpha: false });
     canvas2.style.width = width + "px";
     canvas2.style.height = height + "px";
@@ -819,7 +874,7 @@
   var CELL_COUNT = COLS * COLS;
   function createSim({ ctx: ctx2, width, height, seed }) {
     const { rng } = createRng(seed);
-    const SELF_ATTRACTION_MAX = 0.3;
+    const SELF_ATTRACTION_MAX = 0.5;
     const NOT_FAV_MARGIN = 0.2;
     const A = new Float32Array(TYPE_COUNT * TYPE_COUNT);
     for (let i = 0; i < TYPE_COUNT; i++) {
@@ -1004,6 +1059,7 @@
 
   // main.js
   var FPS = 120;
+  var RECORD_SIZE = 1024;
   var canvas = document.getElementById("c");
   var jsonInput = document.getElementById("json-input");
   var musicInput = document.getElementById("music-input");
@@ -1150,30 +1206,24 @@
     else if (e.key === "l" || e.key === "L") jsonInput.click();
     else if (e.key === "m" || e.key === "M") pickMusicFile();
   });
-  attachJsonInput(jsonInput, async (json) => {
-    const loaded = liveAudio.loadedMusic();
-    if (json.music && (loaded?.name ?? "") !== json.music) {
-      console.log(
-        `[music] JSON expects "${json.music}", currently ${loaded ? `"${loaded.name}"` : "none"} \u2014 opening picker`
-      );
-      await pickMusicFile();
-    }
+  async function runOffline(runJson, { dpr, filename } = {}) {
     offlineMode = true;
     try {
       const music = liveAudio.loadedMusic();
       const blob = await renderOfflineToBlob({
-        json,
+        json: runJson,
         canvas,
         createSim,
         music: music ? { buffer: music.buffer } : null,
         fps: FPS,
-        playbackSpeed: json.playbackSpeed,
+        playbackSpeed: runJson.playbackSpeed,
+        dpr,
         onProgress: showProgress
       });
-      downloadBlob(blob, `orbital-swarm-seed-${json.seed}.mp4`);
+      downloadBlob(blob, filename ?? `particle-life-seed-${runJson.seed}.mp4`);
     } catch (err) {
       console.error(err);
-      alert("Offline render failed: " + err.message);
+      alert("Render failed: " + err.message);
     } finally {
       hideProgress();
       canvas.style.width = "";
@@ -1183,6 +1233,43 @@
       resetFrameTiming();
       requestAnimationFrame(frame);
     }
+  }
+  function recordCurrentRun() {
+    if (offlineMode || simTime <= 0) return;
+    runOffline(
+      {
+        version: 1,
+        seed: currentSeed,
+        duration: simTime,
+        width: RECORD_SIZE,
+        height: RECORD_SIZE,
+        music: liveAudio.loadedMusic()?.name ?? null
+      },
+      {
+        dpr: 1,
+        filename: `particle-life-seed-${currentSeed}-t${Math.round(simTime)}.mp4`
+      }
+    );
+  }
+  attachJsonInput(jsonInput, async (json) => {
+    const loaded = liveAudio.loadedMusic();
+    if (json.music && (loaded?.name ?? "") !== json.music) {
+      console.log(
+        `[music] JSON expects "${json.music}", currently ${loaded ? `"${loaded.name}"` : "none"} \u2014 opening picker`
+      );
+      await pickMusicFile();
+    }
+    await runOffline(json, { filename: `orbital-swarm-seed-${json.seed}.mp4` });
+  });
+  document.getElementById("btn-new")?.addEventListener("click", () => {
+    if (offlineMode) return;
+    liveAudio.resume();
+    newRun();
+  });
+  document.getElementById("btn-record")?.addEventListener("click", () => {
+    if (offlineMode) return;
+    liveAudio.resume();
+    recordCurrentRun();
   });
   resizeToWindow();
   (async () => {
@@ -1202,7 +1289,7 @@
   })();
 })();
 
-</script>
+  </script>
 </body>
 
 </html>
