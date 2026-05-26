@@ -144,7 +144,7 @@
   <canvas id="c"></canvas>
   <input type="file" id="json-input" accept="application/json,.json" style="display:none">
   <input type="file" id="music-input" accept="audio/*" style="display:none">
-  <audio id="bgm" loop preload="auto"></audio>
+  <audio id="bgm" preload="auto"></audio>
   <div id="progress"></div>
   <div id="fps">— fps</div>
 
@@ -179,13 +179,27 @@
   <script>
     // Background music. Browsers block autoplay until the first user gesture,
     // so we attempt playback on the first interaction anywhere on the page.
-    // One of the available tracks is chosen at random per load, for variety.
+    // The tracks play in a shuffled sequence and loop as a set, so a visitor
+    // who lingers hears all of them rather than one on repeat.
     (() => {
       const TRACKS = ["swoosh-garden-a.mp3", "swoosh-garden-b.mp3"];
+      // Fisher–Yates shuffle so the starting track and order vary per load.
+      for (let i = TRACKS.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [TRACKS[i], TRACKS[j]] = [TRACKS[j], TRACKS[i]];
+      }
       const bgm = document.getElementById("bgm");
       const btn = document.getElementById("btn-mute");
-      bgm.src = TRACKS[Math.floor(Math.random() * TRACKS.length)];
+      let track = 0;
+      bgm.src = TRACKS[track];
       bgm.volume = 0.4;
+
+      // When a track finishes, advance to the next; wrap around forever.
+      bgm.addEventListener("ended", () => {
+        track = (track + 1) % TRACKS.length;
+        bgm.src = TRACKS[track];
+        bgm.play().catch(() => {});
+      });
 
       let wantSound = true;
       const sync = () => {
