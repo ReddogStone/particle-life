@@ -91,6 +91,10 @@
       border-color: #ff4f86;
     }
 
+    #btn-mute {
+      padding: 11px 14px;
+    }
+
     #help {
       position: fixed;
       top: 12px;
@@ -140,18 +144,20 @@
   <canvas id="c"></canvas>
   <input type="file" id="json-input" accept="application/json,.json" style="display:none">
   <input type="file" id="music-input" accept="audio/*" style="display:none">
+  <audio id="bgm" loop preload="auto"></audio>
   <div id="progress"></div>
   <div id="fps">— fps</div>
 
   <div id="controls">
     <button id="btn-new" type="button">✨ New</button>
     <button id="btn-record" type="button">● Record</button>
+    <button id="btn-mute" type="button" aria-label="Mute music">🔊</button>
   </div>
 
   <div id="help">
     <div><b>New</b> — fresh ecosystem (or press <kbd>R</kbd>)</div>
     <div><b>Record</b> — save the run so far as a 1024×1024 video</div>
-    <div><kbd>M</kbd> load a music track first (optional)</div>
+    <div><b>🔊</b> — mute / unmute the music</div>
     <div class="note">Recording needs Chrome or Edge. Move the mouse to show this help.</div>
   </div>
 
@@ -169,6 +175,41 @@
       arm();
     })();
   </script>
+
+  <script>
+    // Background music. Browsers block autoplay until the first user gesture,
+    // so we attempt playback on the first interaction anywhere on the page.
+    // One of the available tracks is chosen at random per load, for variety.
+    (() => {
+      const TRACKS = ["swoosh-garden-a.mp3", "swoosh-garden-b.mp3"];
+      const bgm = document.getElementById("bgm");
+      const btn = document.getElementById("btn-mute");
+      bgm.src = TRACKS[Math.floor(Math.random() * TRACKS.length)];
+      bgm.volume = 0.4;
+
+      let wantSound = true;
+      const sync = () => {
+        if (wantSound) bgm.play().catch(() => {}); // may be blocked until a gesture
+        else bgm.pause();
+        btn.textContent = wantSound ? "🔊" : "🔇";
+        btn.setAttribute("aria-label", wantSound ? "Mute music" : "Unmute music");
+      };
+
+      // First gesture unblocks audio; retry play on early interactions.
+      const kick = () => { if (wantSound) bgm.play().catch(() => {}); };
+      ["pointerdown", "keydown", "touchstart"].forEach((ev) =>
+        window.addEventListener(ev, kick));
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        wantSound = !wantSound;
+        sync();
+      });
+
+      sync();
+    })();
+  </script>
+
   <script>
     (() => {
   // lib/audio.js
