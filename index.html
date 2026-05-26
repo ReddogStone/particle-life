@@ -1,0 +1,1208 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Particle Life</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+      font-family: ui-monospace, Menlo, monospace;
+    }
+
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #progress {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.55);
+      color: #fff;
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      z-index: 20;
+      pointer-events: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #fps {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      padding: 4px 8px;
+      background: rgba(0, 0, 0, 0.5);
+      color: #9f9;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    #help {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      padding: 10px 14px;
+      background: rgba(0, 0, 0, 0.55);
+      color: #cde;
+      font-size: 13px;
+      line-height: 1.7;
+      z-index: 10;
+      border-radius: 6px;
+      max-width: 320px;
+      transition: opacity 0.4s;
+    }
+
+    #help kbd {
+      display: inline-block;
+      min-width: 1.1em;
+      text-align: center;
+      padding: 1px 6px;
+      margin-right: 6px;
+      background: #223;
+      border: 1px solid #445;
+      border-radius: 4px;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    #help .note {
+      margin-top: 8px;
+      color: #89a;
+      font-size: 11px;
+    }
+
+    #help.hidden {
+      opacity: 0;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js"></script>
+</head>
+
+<body>
+  <canvas id="c"></canvas>
+  <input type="file" id="json-input" accept="application/json,.json" style="display:none">
+  <input type="file" id="music-input" accept="audio/*" style="display:none">
+  <div id="progress"></div>
+  <div id="fps">— fps</div>
+  <div id="help">
+    <div><kbd>R</kbd> new random ecosystem</div>
+    <div><kbd>S</kbd> save this run (JSON)</div>
+    <div><kbd>L</kbd> load a run &amp; record an MP4</div>
+    <div><kbd>M</kbd> load a music track</div>
+    <div class="note">Recording (MP4 export) needs Chrome or Edge. The live view works in any modern browser. Move the mouse to reveal this help.</div>
+  </div>
+  <script>
+    // Fade the help overlay out after a few seconds; reveal on mouse move.
+    (() => {
+      const help = document.getElementById("help");
+      let timer;
+      const arm = () => {
+        help.classList.remove("hidden");
+        clearTimeout(timer);
+        timer = setTimeout(() => help.classList.add("hidden"), 6000);
+      };
+      window.addEventListener("mousemove", arm);
+      arm();
+    })();
+  </script>
+  <script>
+(() => {
+  // lib/audio.js
+  var MIN_SOUND_GAP = 0.04;
+  var VOICES = {
+    // params: { pan: number in [-1, 1] }
+    explosion(ctx2, dest, t, params = {}) {
+      const panner = ctx2.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, params.pan ?? 0));
+      panner.connect(dest);
+      const dur = 0.18 + Math.random() * 0.08;
+      const f0 = 240 + Math.random() * 160;
+      const f1 = 45 + Math.random() * 25;
+      const osc = ctx2.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f1, t + dur * 0.85);
+      const lp = ctx2.createBiquadFilter();
+      lp.type = "lowpass";
+      lp.Q.value = 8;
+      lp.frequency.setValueAtTime(300, t);
+      lp.frequency.exponentialRampToValueAtTime(1600, t + 0.02);
+      lp.frequency.exponentialRampToValueAtTime(180, t + dur);
+      const g = ctx2.createGain();
+      g.gain.setValueAtTime(1e-4, t);
+      g.gain.exponentialRampToValueAtTime(0.85, t + 6e-3);
+      g.gain.exponentialRampToValueAtTime(1e-3, t + dur);
+      osc.connect(lp);
+      lp.connect(g);
+      g.connect(panner);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    },
+    ring(ctx2, dest, t) {
+      const sr = ctx2.sampleRate;
+      const strikeLen = Math.floor(sr * 0.035);
+      const strikeBuf = ctx2.createBuffer(1, strikeLen, sr);
+      const sd = strikeBuf.getChannelData(0);
+      for (let i = 0; i < strikeLen; i++) {
+        sd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (strikeLen * 0.22));
+      }
+      const strike = ctx2.createBufferSource();
+      strike.buffer = strikeBuf;
+      const sbp = ctx2.createBiquadFilter();
+      sbp.type = "bandpass";
+      sbp.Q.value = 1.8;
+      sbp.frequency.value = 3200;
+      const sg = ctx2.createGain();
+      sg.gain.value = 0.6;
+      strike.connect(sbp);
+      sbp.connect(sg);
+      sg.connect(dest);
+      strike.start(t);
+      const partials = [
+        { f: 440, g: 0.22, d: 2 },
+        { f: 880, g: 0.55, d: 2.6 },
+        { f: 1108, g: 0.32, d: 2 },
+        { f: 1320, g: 0.3, d: 1.8 },
+        { f: 1760, g: 0.28, d: 1.6 },
+        { f: 2349, g: 0.2, d: 1.3 },
+        { f: 2640, g: 0.16, d: 1.1 },
+        { f: 3520, g: 0.1, d: 0.9 },
+        { f: 4400, g: 0.06, d: 0.7 }
+      ];
+      for (const p of partials) {
+        const osc = ctx2.createOscillator();
+        osc.type = "sine";
+        osc.frequency.value = p.f;
+        const g = ctx2.createGain();
+        g.gain.setValueAtTime(1e-4, t);
+        g.gain.exponentialRampToValueAtTime(p.g, t + 6e-3);
+        g.gain.exponentialRampToValueAtTime(1e-4, t + p.d);
+        osc.connect(g);
+        g.connect(dest);
+        osc.start(t);
+        osc.stop(t + p.d + 0.05);
+      }
+    },
+    tick(ctx2, dest, t) {
+      const sr = ctx2.sampleRate;
+      const dur = 0.16;
+      const drive = ctx2.createWaveShaper();
+      drive.curve = _distortionCurve(20);
+      drive.oversample = "4x";
+      const wetGain = ctx2.createGain();
+      wetGain.gain.value = 0.9;
+      const driveLp = ctx2.createBiquadFilter();
+      driveLp.type = "lowpass";
+      driveLp.frequency.value = 1800;
+      drive.connect(driveLp);
+      driveLp.connect(wetGain);
+      wetGain.connect(dest);
+      const clickLen = Math.floor(sr * 0.022);
+      const clickBuf = ctx2.createBuffer(1, clickLen, sr);
+      const cd = clickBuf.getChannelData(0);
+      for (let i = 0; i < clickLen; i++) {
+        cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (clickLen * 0.35));
+      }
+      const click = ctx2.createBufferSource();
+      click.buffer = clickBuf;
+      const clickHp = ctx2.createBiquadFilter();
+      clickHp.type = "bandpass";
+      clickHp.Q.value = 0.7;
+      clickHp.frequency.value = 1200;
+      const clickG = ctx2.createGain();
+      clickG.gain.value = 0.6;
+      click.connect(clickHp);
+      clickHp.connect(clickG);
+      clickG.connect(dest);
+      click.start(t);
+      const osc = ctx2.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(220, t);
+      osc.frequency.exponentialRampToValueAtTime(32, t + 0.07);
+      const oscG = ctx2.createGain();
+      oscG.gain.setValueAtTime(1e-4, t);
+      oscG.gain.exponentialRampToValueAtTime(2, t + 3e-3);
+      oscG.gain.exponentialRampToValueAtTime(1e-4, t + dur);
+      osc.connect(oscG);
+      oscG.connect(drive);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+      const gritLen = Math.floor(sr * 0.13);
+      const gritBuf = ctx2.createBuffer(1, gritLen, sr);
+      const nd = gritBuf.getChannelData(0);
+      for (let i = 0; i < gritLen; i++) nd[i] = Math.random() * 2 - 1;
+      const grit = ctx2.createBufferSource();
+      grit.buffer = gritBuf;
+      const gritLp = ctx2.createBiquadFilter();
+      gritLp.type = "lowpass";
+      gritLp.Q.value = 1.2;
+      gritLp.frequency.setValueAtTime(1200, t);
+      gritLp.frequency.exponentialRampToValueAtTime(180, t + 0.12);
+      const gritG = ctx2.createGain();
+      gritG.gain.setValueAtTime(1e-4, t);
+      gritG.gain.exponentialRampToValueAtTime(1.4, t + 4e-3);
+      gritG.gain.exponentialRampToValueAtTime(1e-4, t + 0.12);
+      grit.connect(gritLp);
+      gritLp.connect(gritG);
+      gritG.connect(drive);
+      grit.start(t);
+    },
+    // Tonal mallet-ish note. params: { freq: Hz (default 440), dur: seconds
+    // (default 0.5), gain: linear (default 0.7) }. Sine fundamental + a quieter
+    // 2× harmonic for a touch of warmth; exponential AD envelope.
+    note(ctx2, dest, t, params = {}) {
+      const freq = params.freq ?? 440;
+      const dur = params.dur ?? 0.5;
+      const gain = params.gain ?? 0.7;
+      const osc1 = ctx2.createOscillator();
+      osc1.type = "sine";
+      osc1.frequency.setValueAtTime(freq, t);
+      const g1 = ctx2.createGain();
+      g1.gain.setValueAtTime(1e-4, t);
+      g1.gain.exponentialRampToValueAtTime(gain, t + 5e-3);
+      g1.gain.exponentialRampToValueAtTime(1e-4, t + dur);
+      osc1.connect(g1);
+      g1.connect(dest);
+      osc1.start(t);
+      osc1.stop(t + dur + 0.02);
+      const osc2 = ctx2.createOscillator();
+      osc2.type = "sine";
+      osc2.frequency.setValueAtTime(freq * 2, t);
+      const g2 = ctx2.createGain();
+      g2.gain.setValueAtTime(1e-4, t);
+      g2.gain.exponentialRampToValueAtTime(gain * 0.22, t + 4e-3);
+      g2.gain.exponentialRampToValueAtTime(1e-4, t + dur * 0.55);
+      osc2.connect(g2);
+      g2.connect(dest);
+      osc2.start(t);
+      osc2.stop(t + dur * 0.55 + 0.02);
+    },
+    softTick(ctx2, dest, t) {
+      const sr = ctx2.sampleRate;
+      const dur = 0.03;
+      const len = Math.floor(sr * dur);
+      const buf = ctx2.createBuffer(1, len, sr);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len * 0.22));
+      }
+      const src = ctx2.createBufferSource();
+      src.buffer = buf;
+      const bp = ctx2.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.Q.value = 1.4;
+      bp.frequency.value = 3600;
+      const g = ctx2.createGain();
+      g.gain.value = 0.36;
+      src.connect(bp);
+      bp.connect(g);
+      g.connect(dest);
+      src.start(t);
+    }
+  };
+  var THROTTLED = /* @__PURE__ */ new Set(["explosion"]);
+  function _distortionCurve(amount) {
+    const n = 1024;
+    const c = new Float32Array(n);
+    const k = Math.tanh(amount);
+    for (let i = 0; i < n; i++) {
+      const x = i / (n - 1) * 2 - 1;
+      c[i] = Math.tanh(x * amount) / k;
+    }
+    return c;
+  }
+  function _makeSoftClipCurve(ceiling = 0.95, knee = 0.85) {
+    const N = 8192;
+    const curve = new Float32Array(N);
+    const range = ceiling - knee;
+    for (let i = 0; i < N; i++) {
+      const x = i / (N - 1) * 2 - 1;
+      const a = Math.abs(x);
+      if (a <= knee) {
+        curve[i] = x;
+      } else {
+        curve[i] = Math.sign(x) * (knee + range * Math.tanh((a - knee) / range));
+      }
+    }
+    return curve;
+  }
+  function _buildMasterBus(ctx2) {
+    const input = ctx2.createGain();
+    input.gain.value = 1;
+    const comp = ctx2.createDynamicsCompressor();
+    comp.threshold.value = -6;
+    comp.knee.value = 6;
+    comp.ratio.value = 8;
+    comp.attack.value = 15e-4;
+    comp.release.value = 0.08;
+    const safety = ctx2.createWaveShaper();
+    safety.curve = _makeSoftClipCurve(0.95, 0.92);
+    safety.oversample = "4x";
+    input.connect(comp);
+    comp.connect(safety);
+    safety.connect(ctx2.destination);
+    return input;
+  }
+  function createLiveAudio() {
+    let ctx2 = null;
+    let masterGain = null;
+    let musicBuffer = null;
+    let musicName = "";
+    let lastSoundT = -Infinity;
+    function ensure() {
+      if (ctx2) return ctx2;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      ctx2 = new Ctx();
+      masterGain = _buildMasterBus(ctx2);
+      return ctx2;
+    }
+    function resume() {
+      ensure();
+      if (ctx2 && ctx2.state === "suspended") ctx2.resume();
+    }
+    async function loadMusic(file) {
+      resume();
+      if (!ctx2) throw new Error("Audio not initialised yet.");
+      try {
+        const arr = await file.arrayBuffer();
+        musicBuffer = await ctx2.decodeAudioData(arr);
+        musicName = file.name;
+        console.log(`[music] loaded ${musicName} (${musicBuffer.duration.toFixed(2)}s, ${musicBuffer.numberOfChannels}ch, ${musicBuffer.sampleRate}Hz)`);
+        return { name: musicName, buffer: musicBuffer };
+      } catch (e) {
+        musicBuffer = null;
+        musicName = "";
+        throw new Error("Could not decode audio: " + e.message);
+      }
+    }
+    function loadedMusic() {
+      return musicBuffer ? { name: musicName, buffer: musicBuffer } : null;
+    }
+    function fire(simTime2, voice, params) {
+      if (!ctx2 || ctx2.state !== "running") return;
+      const synth = VOICES[voice];
+      if (!synth) throw new Error(`Unknown voice: ${voice}`);
+      const t = ctx2.currentTime;
+      if (THROTTLED.has(voice)) {
+        if (t - lastSoundT < MIN_SOUND_GAP) return;
+        lastSoundT = t;
+      }
+      synth(ctx2, masterGain, t, params);
+    }
+    return { ensure, resume, loadMusic, loadedMusic, fire };
+  }
+  function createOfflineAudio() {
+    const events = [];
+    const musicTracks = [];
+    function fire(simTime2, voice, params = {}) {
+      if (!VOICES[voice]) throw new Error(`Unknown voice: ${voice}`);
+      events.push({ simTime: simTime2, voice, params });
+    }
+    function attachMusic(buffer, { offset = 0, gain = 0.5 } = {}) {
+      if (!buffer) return;
+      musicTracks.push({ buffer, offset, gain });
+    }
+    async function render({ duration, sampleRate = 48e3, channels = 2, playbackSpeed = 1 }) {
+      const totalSamples = Math.ceil(sampleRate * duration);
+      const ctx2 = new OfflineAudioContext(channels, totalSamples, sampleRate);
+      const masterGain = _buildMasterBus(ctx2);
+      let lastSoundT = -Infinity;
+      for (const ev of events) {
+        const t = ev.simTime / playbackSpeed;
+        if (t < 0 || t >= duration) continue;
+        if (THROTTLED.has(ev.voice)) {
+          if (t - lastSoundT < MIN_SOUND_GAP) continue;
+          lastSoundT = t;
+        }
+        VOICES[ev.voice](ctx2, masterGain, t, ev.params);
+      }
+      for (const mu of musicTracks) {
+        const g = ctx2.createGain();
+        g.gain.value = mu.gain;
+        g.connect(ctx2.destination);
+        const src = ctx2.createBufferSource();
+        src.buffer = mu.buffer;
+        src.connect(g);
+        if (mu.offset >= 0) {
+          src.start(0, Math.min(mu.offset, Math.max(0, mu.buffer.duration - 0.01)));
+        } else {
+          src.start(-mu.offset);
+        }
+      }
+      return await ctx2.startRendering();
+    }
+    return { fire, attachMusic, render };
+  }
+
+  // lib/replay.js
+  function makeRunRecord({
+    seed,
+    duration,
+    width,
+    height,
+    music = null,
+    // filename hint
+    musicOffset = 0,
+    // > 0 = skip into music; < 0 = delay
+    musicGain = 0.5,
+    extras = null
+    // any sim-specific fields to also save
+  }) {
+    const data = {
+      version: 1,
+      seed,
+      duration: +duration.toFixed(4),
+      width,
+      height,
+      music,
+      musicOffset,
+      musicGain
+    };
+    if (extras) Object.assign(data, extras);
+    return data;
+  }
+  function downloadJson(data, filename) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1e3);
+  }
+  function attachJsonInput(inputEl, onPick) {
+    inputEl.addEventListener("change", async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = "";
+      if (!file) return;
+      try {
+        const json = JSON.parse(await file.text());
+        onPick(json, file);
+      } catch (e) {
+        alert("Could not parse JSON: " + e.message);
+      }
+    });
+  }
+
+  // lib/audio_checks.js
+  var CLIPPING_THRESHOLD = 0.99;
+  var CLIPPED_RUN_MIN = 3;
+  var DC_OFFSET_LIMIT = 5e-3;
+  var SILENCE_RMS_DBFS = -60;
+  var CHANNEL_IMBALANCE_DB = 3;
+  function rms(d) {
+    let e = 0;
+    for (let i = 0; i < d.length; i++) e += d[i] * d[i];
+    return Math.sqrt(e / d.length);
+  }
+  function mean(d) {
+    let s = 0;
+    for (let i = 0; i < d.length; i++) s += d[i];
+    return s / d.length;
+  }
+  function peak(d) {
+    let p = 0;
+    for (let i = 0; i < d.length; i++) {
+      const a = Math.abs(d[i]);
+      if (a > p) p = a;
+    }
+    return p;
+  }
+  function clippingEvents(d) {
+    let events = 0;
+    let run = 0;
+    for (let i = 0; i < d.length; i++) {
+      if (Math.abs(d[i]) >= CLIPPING_THRESHOLD) {
+        run++;
+        if (run === CLIPPED_RUN_MIN) events++;
+      } else {
+        run = 0;
+      }
+    }
+    return events;
+  }
+  function hasNonFinite(d) {
+    for (let i = 0; i < d.length; i++) {
+      if (!Number.isFinite(d[i])) return true;
+    }
+    return false;
+  }
+  var dBFS = (x) => x > 0 ? 20 * Math.log10(x) : -Infinity;
+  function runAudioChecks(buf) {
+    const channels = [];
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      channels.push(buf.getChannelData(ch));
+    }
+    const stats = channels.map((d, i) => ({
+      channel: i,
+      rms: rms(d),
+      mean: mean(d),
+      peak: peak(d),
+      clippingEvents: clippingEvents(d),
+      nonFinite: hasNonFinite(d)
+    }));
+    const warnings = [];
+    for (const s of stats) {
+      if (s.nonFinite) {
+        warnings.push(`ch${s.channel}: contains NaN or Infinity (corrupt buffer)`);
+      }
+      if (s.clippingEvents > 0) {
+        warnings.push(
+          `ch${s.channel}: ${s.clippingEvents} hard-clipping event(s) (\u2265${CLIPPED_RUN_MIN} samples at \u2265${CLIPPING_THRESHOLD})`
+        );
+      }
+      if (Math.abs(s.mean) > DC_OFFSET_LIMIT) {
+        warnings.push(`ch${s.channel}: DC offset ${s.mean.toFixed(4)} (limit ${DC_OFFSET_LIMIT})`);
+      }
+      if (dBFS(s.rms) < SILENCE_RMS_DBFS) {
+        warnings.push(`ch${s.channel}: essentially silent (RMS ${dBFS(s.rms).toFixed(1)} dBFS)`);
+      }
+    }
+    if (stats.length >= 2 && stats[0].rms > 1e-6 && stats[1].rms > 1e-6) {
+      const balance = 20 * Math.log10(stats[0].rms / stats[1].rms);
+      if (Math.abs(balance) > CHANNEL_IMBALANCE_DB) {
+        warnings.push(
+          `L/R imbalance: ${balance.toFixed(1)} dB (left ${balance > 0 ? "louder" : "quieter"} than right)`
+        );
+      }
+    }
+    return { warnings, stats };
+  }
+  function logAudioChecks(buf, label = "[audio]") {
+    const { warnings, stats } = runAudioChecks(buf);
+    const summary = stats.map((s) => `ch${s.channel}: peak ${dBFS(s.peak).toFixed(1)}dBFS, rms ${dBFS(s.rms).toFixed(1)}dBFS`).join(" \xB7 ");
+    console.log(`${label} ${summary}`);
+    if (warnings.length === 0) {
+      console.log(`${label} \u2713 checks passed`);
+      return warnings;
+    }
+    console.warn(
+      `%c${label} \u26A0 ${warnings.length} AUDIO PROBLEM${warnings.length === 1 ? "" : "S"} \u2014 recording may sound bad`,
+      "background:#400;color:#ffb;font-weight:bold;padding:3px 8px;font-size:14px;border-radius:3px;"
+    );
+    console.group(`${label} details`);
+    for (const w of warnings) console.warn(`\u2022 ${w}`);
+    console.groupEnd();
+    return warnings;
+  }
+
+  // lib/render_offline.js
+  async function renderOfflineToBlob({
+    json,
+    canvas: canvas2,
+    createSim: createSim2,
+    music = null,
+    fps = 60,
+    playbackSpeed = 1,
+    onProgress = () => {
+    }
+  }) {
+    if (typeof Mp4Muxer === "undefined") {
+      throw new Error("mp4-muxer failed to load from CDN. Check your network.");
+    }
+    if (typeof VideoEncoder === "undefined" || typeof AudioEncoder === "undefined") {
+      throw new Error("This browser does not support WebCodecs. Use Chrome or Edge.");
+    }
+    const { seed, duration, width, height } = json;
+    if (!seed || !duration || !width || !height) {
+      throw new Error("Invalid run JSON.");
+    }
+    const DPR2 = Math.min(window.devicePixelRatio || 1, 2);
+    const ctx2 = canvas2.getContext("2d", { alpha: false });
+    canvas2.style.width = width + "px";
+    canvas2.style.height = height + "px";
+    canvas2.width = Math.floor(width * DPR2);
+    canvas2.height = Math.floor(height * DPR2);
+    ctx2.setTransform(DPR2, 0, 0, DPR2, 0, 0);
+    ctx2.clearRect(0, 0, width, height);
+    const audio = createOfflineAudio();
+    const sim2 = createSim2({ ctx: ctx2, width, height, seed });
+    if (sim2.ready) await sim2.ready;
+    try {
+      const outW = canvas2.width;
+      const outH = canvas2.height;
+      const simStepsPerFrame = Math.max(1, playbackSpeed | 0);
+      let totalFrames = Math.max(1, Math.round(duration * fps / simStepsPerFrame));
+      const sampleRate = 48e3;
+      const muxer = new Mp4Muxer.Muxer({
+        target: new Mp4Muxer.ArrayBufferTarget(),
+        video: { codec: "avc", width: outW, height: outH, frameRate: fps },
+        // Opus instead of AAC: 20ms frames natively, no MDCT pre-echo around
+        // sharp note attacks. Opus-in-MP4 is standardized (RFC 8331 / ISO/IEC 14496).
+        audio: { codec: "opus", sampleRate, numberOfChannels: 2 },
+        fastStart: "in-memory"
+      });
+      const videoEncoder = new VideoEncoder({
+        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+        error: (e) => console.error("video encoder error:", e)
+      });
+      const codecCandidates = ["avc1.640033", "avc1.640028", "avc1.4D0033", "avc1.42E01E"];
+      let chosenCodec = null;
+      for (const c of codecCandidates) {
+        const r = await VideoEncoder.isConfigSupported({
+          codec: c,
+          width: outW,
+          height: outH,
+          bitrate: 25e6,
+          framerate: fps
+        }).catch(() => null);
+        if (r && r.supported) {
+          chosenCodec = c;
+          break;
+        }
+      }
+      if (!chosenCodec) throw new Error("No supported H.264 profile found.");
+      videoEncoder.configure({
+        codec: chosenCodec,
+        width: outW,
+        height: outH,
+        bitrate: 25e6,
+        framerate: fps,
+        latencyMode: "quality"
+      });
+      onProgress(`Rendering 0 / ${totalFrames} (0%)`);
+      const startWall = performance.now();
+      const simDt = 1 / fps;
+      let simTime2 = 0;
+      for (let i = 0; i < totalFrames; i++) {
+        for (let s = 0; s < simStepsPerFrame; s++) {
+          simTime2 += simDt;
+          sim2.advance(simDt, simTime2, audio);
+        }
+        await sim2.draw(simTime2);
+        const vf = new VideoFrame(canvas2, {
+          timestamp: Math.round(i * (1e6 / fps)),
+          duration: Math.round(1e6 / fps)
+        });
+        videoEncoder.encode(vf, { keyFrame: i % 120 === 0 });
+        vf.close();
+        const endSim = sim2.getEndTime?.();
+        if (endSim != null) {
+          const needFrames = Math.ceil(endSim * fps / simStepsPerFrame);
+          if (needFrames > totalFrames) totalFrames = needFrames;
+        }
+        if (videoEncoder.encodeQueueSize > 8) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+        if (i % 15 === 0 || i === totalFrames - 1) {
+          const pct = Math.round((i + 1) / totalFrames * 100);
+          onProgress(`Rendering ${i + 1} / ${totalFrames} (${pct}%)`);
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      await videoEncoder.flush();
+      videoEncoder.close();
+      onProgress("Rendering audio\u2026");
+      await new Promise((r) => setTimeout(r, 0));
+      if (music) {
+        const offset = typeof music.offset === "number" ? music.offset : typeof json.musicOffset === "number" ? json.musicOffset : 0;
+        const gain = typeof music.gain === "number" ? music.gain : typeof json.musicGain === "number" ? json.musicGain : 0.5;
+        audio.attachMusic(music.buffer, { offset, gain });
+        console.log(`[music] mixed: offset=${offset}s \xB7 gain=${gain}`);
+      } else if (json.music) {
+        console.warn(`[music] JSON expects "${json.music}" but no music was supplied. Pass music: {buffer, ...} to renderOfflineToBlob.`);
+      }
+      const audioBuffer = await audio.render({
+        duration: totalFrames / fps + 0.5,
+        sampleRate,
+        playbackSpeed: simStepsPerFrame
+      });
+      logAudioChecks(audioBuffer);
+      const audioEncoder = new AudioEncoder({
+        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+        error: (e) => console.error("audio encoder error:", e)
+      });
+      audioEncoder.configure({
+        codec: "opus",
+        sampleRate,
+        numberOfChannels: 2,
+        // Opus is ~2× more bit-efficient than AAC; 160 kbps is transparent quality.
+        bitrate: 16e4
+      });
+      const ch0 = audioBuffer.getChannelData(0);
+      const ch1 = audioBuffer.getChannelData(1);
+      const chunkSize = 960;
+      for (let pos = 0; pos < ch0.length; pos += chunkSize) {
+        const n = Math.min(chunkSize, ch0.length - pos);
+        const data = new Float32Array(n * 2);
+        data.set(ch0.subarray(pos, pos + n), 0);
+        data.set(ch1.subarray(pos, pos + n), n);
+        const ad = new AudioData({
+          format: "f32-planar",
+          sampleRate,
+          numberOfFrames: n,
+          numberOfChannels: 2,
+          timestamp: Math.round(pos / sampleRate * 1e6),
+          data
+        });
+        audioEncoder.encode(ad);
+        ad.close();
+      }
+      await audioEncoder.flush();
+      audioEncoder.close();
+      muxer.finalize();
+      const elapsed = ((performance.now() - startWall) / 1e3).toFixed(1);
+      console.log(`offline render: ${totalFrames} frames in ${elapsed}s`);
+      return new Blob([muxer.target.buffer], { type: "video/mp4" });
+    } finally {
+      sim2.dispose?.();
+    }
+  }
+
+  // lib/rng.js
+  function createRng(seed) {
+    let state = seed >>> 0 || 1;
+    function rng() {
+      let t = state = state + 1831565813 >>> 0;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    }
+    function rand(a, b) {
+      return a + rng() * (b - a);
+    }
+    return { rng, rand };
+  }
+  function pickSeed() {
+    return Math.floor(Math.random() * 4294967295) >>> 0 || 1;
+  }
+
+  // sims/particle_life.js
+  var WORLD = 1024;
+  var N_PARTICLES = 3e3;
+  var TYPE_COUNT = 5;
+  var R_MAX = 80;
+  var R_MIN = 10;
+  var REPULSION_STRENGTH = 1;
+  var FORCE_SCALE = 750;
+  var FRICTION = 0.7;
+  var DT = 0.01;
+  var COLOR_BY_TYPE = [
+    "#39ff14",
+    // green
+    "#ff10f0",
+    // magenta
+    "#00f5ff",
+    // cyan
+    "#faff00",
+    // yellow
+    "#ff5e00"
+    // orange
+  ];
+  var GLOW_SPRITE_RADIUS = 30;
+  var GLOW_PEAK_ALPHA = 1;
+  var GLOW_CORE_SIGMA = 1;
+  var GLOW_HALO_SIGMA = 12;
+  var GLOW_HALO_RATIO = 0.05;
+  var R_MAX2 = R_MAX * R_MAX;
+  var R_MIN_RATIO = R_MIN / R_MAX;
+  var TENT_DENOM = 1 - R_MIN_RATIO;
+  var COLS = Math.max(1, Math.floor(WORLD / R_MAX));
+  var CELL = WORLD / COLS;
+  var CELL_COUNT = COLS * COLS;
+  function createSim({ ctx: ctx2, width, height, seed }) {
+    const { rng } = createRng(seed);
+    const SELF_ATTRACTION_MAX = 0.3;
+    const NOT_FAV_MARGIN = 0.2;
+    const A = new Float32Array(TYPE_COUNT * TYPE_COUNT);
+    for (let i = 0; i < TYPE_COUNT; i++) {
+      let maxOff = -Infinity;
+      for (let j = 0; j < TYPE_COUNT; j++) {
+        if (j === i) continue;
+        const v = rng() * 2 - 1;
+        A[i * TYPE_COUNT + j] = v;
+        if (v > maxOff) maxOff = v;
+      }
+      const selfRaw = rng() * (SELF_ATTRACTION_MAX + 1) - 1;
+      const selfCap = maxOff - NOT_FAV_MARGIN;
+      A[i * TYPE_COUNT + i] = selfRaw < selfCap ? selfRaw : selfCap;
+    }
+    const x = new Float32Array(N_PARTICLES);
+    const y = new Float32Array(N_PARTICLES);
+    const vx = new Float32Array(N_PARTICLES);
+    const vy = new Float32Array(N_PARTICLES);
+    const ax = new Float32Array(N_PARTICLES);
+    const ay = new Float32Array(N_PARTICLES);
+    const type = new Uint8Array(N_PARTICLES);
+    for (let i = 0; i < N_PARTICLES; i++) {
+      x[i] = rng() * WORLD;
+      y[i] = rng() * WORLD;
+      type[i] = Math.floor(rng() * TYPE_COUNT);
+    }
+    const buckets = [];
+    for (let t = 0; t < TYPE_COUNT; t++) buckets.push([]);
+    for (let i = 0; i < N_PARTICLES; i++) buckets[type[i]].push(i);
+    const glowSprites = COLOR_BY_TYPE.map((hex) => {
+      const D = GLOW_SPRITE_RADIUS * 2;
+      const s = document.createElement("canvas");
+      s.width = D;
+      s.height = D;
+      const sc = s.getContext("2d");
+      const img = sc.createImageData(D, D);
+      const data = img.data;
+      const n = parseInt(hex.slice(1), 16);
+      const R = n >> 16 & 255;
+      const G = n >> 8 & 255;
+      const B = n & 255;
+      const invCore = 1 / (2 * GLOW_CORE_SIGMA * GLOW_CORE_SIGMA);
+      const invHalo = 1 / (2 * GLOW_HALO_SIGMA * GLOW_HALO_SIGMA);
+      const wCore = 1 - GLOW_HALO_RATIO;
+      const wHalo = GLOW_HALO_RATIO;
+      for (let py = 0; py < D; py++) {
+        const dy = py - GLOW_SPRITE_RADIUS + 0.5;
+        for (let px = 0; px < D; px++) {
+          const dx = px - GLOW_SPRITE_RADIUS + 0.5;
+          const r2 = dx * dx + dy * dy;
+          const a = GLOW_PEAK_ALPHA * (wCore * Math.exp(-r2 * invCore) + wHalo * Math.exp(-r2 * invHalo));
+          const i = (py * D + px) * 4;
+          data[i] = R;
+          data[i + 1] = G;
+          data[i + 2] = B;
+          data[i + 3] = Math.round(a * 255);
+        }
+      }
+      sc.putImageData(img, 0, 0);
+      return s;
+    });
+    const cellStart = new Int32Array(CELL_COUNT + 1);
+    const cellList = new Int32Array(N_PARTICLES);
+    const cellCursor = new Int32Array(CELL_COUNT);
+    const cellOf = new Int32Array(N_PARTICLES);
+    const scratch = document.createElement("canvas");
+    scratch.width = WORLD;
+    scratch.height = WORLD;
+    const sctx = scratch.getContext("2d", { alpha: false });
+    function rebuildHash() {
+      cellStart.fill(0);
+      for (let i = 0; i < N_PARTICLES; i++) {
+        const cx = Math.floor(x[i] / CELL) | 0;
+        const cy = Math.floor(y[i] / CELL) | 0;
+        const c = cy * COLS + cx;
+        cellOf[i] = c;
+        cellStart[c + 1]++;
+      }
+      for (let c = 0; c < CELL_COUNT; c++) cellStart[c + 1] += cellStart[c];
+      cellCursor.fill(0);
+      for (let i = 0; i < N_PARTICLES; i++) {
+        const c = cellOf[i];
+        cellList[cellStart[c] + cellCursor[c]++] = i;
+      }
+    }
+    function advance(_dt, _simTime, _audio) {
+      rebuildHash();
+      const halfW = WORLD * 0.5;
+      for (let i = 0; i < N_PARTICLES; i++) {
+        const xi = x[i], yi = y[i];
+        const ti = type[i];
+        const arow = ti * TYPE_COUNT;
+        const cx = Math.floor(xi / CELL) | 0;
+        const cy = Math.floor(yi / CELL) | 0;
+        let axi = 0, ayi = 0;
+        for (let oy = -1; oy <= 1; oy++) {
+          const ncy = ((cy + oy) % COLS + COLS) % COLS;
+          for (let ox = -1; ox <= 1; ox++) {
+            const ncx = ((cx + ox) % COLS + COLS) % COLS;
+            const ci = ncy * COLS + ncx;
+            const a = cellStart[ci], b = cellStart[ci + 1];
+            for (let k = a; k < b; k++) {
+              const j = cellList[k];
+              if (j === i) continue;
+              let dx = x[j] - xi;
+              let dy = y[j] - yi;
+              if (dx > halfW) dx -= WORLD;
+              else if (dx < -halfW) dx += WORLD;
+              if (dy > halfW) dy -= WORLD;
+              else if (dy < -halfW) dy += WORLD;
+              const d2 = dx * dx + dy * dy;
+              if (d2 >= R_MAX2 || d2 === 0) continue;
+              const d = Math.sqrt(d2);
+              const r = d / R_MAX;
+              let f;
+              if (r < R_MIN_RATIO) {
+                f = (r / R_MIN_RATIO - 1) * REPULSION_STRENGTH;
+              } else {
+                const tent = 1 - Math.abs(2 * r - 1 - R_MIN_RATIO) / TENT_DENOM;
+                f = A[arow + type[j]] * tent;
+              }
+              const invD = 1 / d;
+              axi += f * dx * invD;
+              ayi += f * dy * invD;
+            }
+          }
+        }
+        ax[i] = axi;
+        ay[i] = ayi;
+      }
+      for (let i = 0; i < N_PARTICLES; i++) {
+        const nvx = (vx[i] + ax[i] * FORCE_SCALE * DT) * FRICTION;
+        const nvy = (vy[i] + ay[i] * FORCE_SCALE * DT) * FRICTION;
+        vx[i] = nvx;
+        vy[i] = nvy;
+        let nx = x[i] + nvx * DT;
+        let ny = y[i] + nvy * DT;
+        if (nx < 0) nx += WORLD;
+        else if (nx >= WORLD) nx -= WORLD;
+        if (ny < 0) ny += WORLD;
+        else if (ny >= WORLD) ny -= WORLD;
+        x[i] = nx;
+        y[i] = ny;
+      }
+    }
+    function draw(_simTime) {
+      sctx.fillStyle = "#000";
+      sctx.fillRect(0, 0, WORLD, WORLD);
+      sctx.globalCompositeOperation = "lighter";
+      for (let t = 0; t < TYPE_COUNT; t++) {
+        const list = buckets[t];
+        if (list.length === 0) continue;
+        const sprite = glowSprites[t];
+        for (let k = 0; k < list.length; k++) {
+          const i = list[k];
+          sctx.drawImage(
+            sprite,
+            x[i] - GLOW_SPRITE_RADIUS,
+            y[i] - GLOW_SPRITE_RADIUS
+          );
+        }
+      }
+      sctx.globalCompositeOperation = "source-over";
+      ctx2.save();
+      ctx2.setTransform(1, 0, 0, 1, 0, 0);
+      ctx2.fillStyle = "#000";
+      ctx2.fillRect(0, 0, ctx2.canvas.width, ctx2.canvas.height);
+      ctx2.restore();
+      const fit = Math.min(width, height);
+      const dx = (width - fit) / 2;
+      const dy = (height - fit) / 2;
+      ctx2.drawImage(scratch, dx, dy, fit, fit);
+      return Promise.resolve();
+    }
+    function getEndTime() {
+      return null;
+    }
+    function dispose() {
+    }
+    return { seed, advance, draw, getEndTime, dispose };
+  }
+
+  // main.js
+  var FPS = 120;
+  var canvas = document.getElementById("c");
+  var jsonInput = document.getElementById("json-input");
+  var musicInput = document.getElementById("music-input");
+  var progressEl = document.getElementById("progress");
+  var fpsEl = document.getElementById("fps");
+  var ctx = canvas.getContext("2d", { alpha: false });
+  var liveAudio = createLiveAudio();
+  var DPR = 1;
+  var W = 0;
+  var H = 0;
+  var sim = null;
+  var currentSeed = 1;
+  var simTime = 0;
+  var offlineMode = false;
+  function resizeToWindow() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+  }
+  window.addEventListener("resize", () => {
+    if (!offlineMode) resizeToWindow();
+  });
+  function newRun(seed) {
+    sim?.dispose?.();
+    currentSeed = (seed != null ? seed : pickSeed()) >>> 0 || 1;
+    simTime = 0;
+    sim = createSim({ ctx, width: W, height: H, seed: currentSeed });
+    document.title = `Particle Life \u2014 seed ${currentSeed}`;
+    resetFrameTiming();
+  }
+  var STEP_DT = 1 / FPS;
+  var MAX_BACKLOG = 5 * STEP_DT;
+  var lastFrameTime = 0;
+  var dtAccumulator = 0;
+  var fpsWindowStart = 0;
+  var fpsStepCount = 0;
+  var fpsStepTimeAccum = 0;
+  function resetFrameTiming() {
+    lastFrameTime = performance.now();
+    dtAccumulator = 0;
+    fpsWindowStart = lastFrameTime;
+    fpsStepCount = 0;
+    fpsStepTimeAccum = 0;
+  }
+  async function frame() {
+    if (offlineMode) return;
+    const now = performance.now();
+    const wallDt = (now - lastFrameTime) / 1e3;
+    lastFrameTime = now;
+    dtAccumulator = Math.min(dtAccumulator + wallDt, MAX_BACKLOG);
+    if (dtAccumulator >= STEP_DT) {
+      dtAccumulator -= STEP_DT;
+      simTime += STEP_DT;
+      const stepStart = performance.now();
+      sim.advance(STEP_DT, simTime, liveAudio);
+      await sim.draw(simTime);
+      const stepEnd = performance.now();
+      fpsStepCount += 1;
+      fpsStepTimeAccum += stepEnd - stepStart;
+      if (stepEnd - fpsWindowStart >= 500) {
+        const fps = fpsStepCount * 1e3 / (stepEnd - fpsWindowStart);
+        const msPerStep = fpsStepTimeAccum / fpsStepCount;
+        fpsEl.textContent = `${fps.toFixed(1)} fps \xB7 ${msPerStep.toFixed(1)} ms/step`;
+        fpsWindowStart = stepEnd;
+        fpsStepCount = 0;
+        fpsStepTimeAccum = 0;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  function saveSeed() {
+    const data = makeRunRecord({
+      seed: currentSeed,
+      duration: simTime,
+      width: W,
+      height: H,
+      music: liveAudio.loadedMusic()?.name ?? null
+    });
+    downloadJson(
+      data,
+      `orbital-swarm-seed-${currentSeed}-t${Math.round(simTime)}.json`
+    );
+  }
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1e3);
+  }
+  function pickMusicFile() {
+    return new Promise((resolve) => {
+      let done = false;
+      const cleanup = () => {
+        musicInput.removeEventListener("change", onChange);
+        musicInput.removeEventListener("cancel", onCancel);
+      };
+      const onChange = async (e) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        const f = e.target.files && e.target.files[0];
+        e.target.value = "";
+        if (f) {
+          try {
+            await liveAudio.loadMusic(f);
+          } catch (err) {
+            alert(err.message);
+          }
+        }
+        resolve();
+      };
+      const onCancel = () => {
+        if (done) return;
+        done = true;
+        cleanup();
+        console.log("[music] picker cancelled \u2014 rendering without music");
+        resolve();
+      };
+      musicInput.addEventListener("change", onChange);
+      musicInput.addEventListener("cancel", onCancel);
+      musicInput.click();
+    });
+  }
+  function showProgress(text) {
+    progressEl.textContent = text;
+    progressEl.style.display = "flex";
+  }
+  function hideProgress() {
+    progressEl.style.display = "none";
+  }
+  window.addEventListener("keydown", (e) => {
+    if (offlineMode) return;
+    liveAudio.resume();
+    if (e.key === "r" || e.key === "R") newRun();
+    else if (e.key === "s" || e.key === "S") saveSeed();
+    else if (e.key === "l" || e.key === "L") jsonInput.click();
+    else if (e.key === "m" || e.key === "M") pickMusicFile();
+  });
+  attachJsonInput(jsonInput, async (json) => {
+    const loaded = liveAudio.loadedMusic();
+    if (json.music && (loaded?.name ?? "") !== json.music) {
+      console.log(
+        `[music] JSON expects "${json.music}", currently ${loaded ? `"${loaded.name}"` : "none"} \u2014 opening picker`
+      );
+      await pickMusicFile();
+    }
+    offlineMode = true;
+    try {
+      const music = liveAudio.loadedMusic();
+      const blob = await renderOfflineToBlob({
+        json,
+        canvas,
+        createSim,
+        music: music ? { buffer: music.buffer } : null,
+        fps: FPS,
+        playbackSpeed: json.playbackSpeed,
+        onProgress: showProgress
+      });
+      downloadBlob(blob, `orbital-swarm-seed-${json.seed}.mp4`);
+    } catch (err) {
+      console.error(err);
+      alert("Offline render failed: " + err.message);
+    } finally {
+      hideProgress();
+      canvas.style.width = "";
+      canvas.style.height = "";
+      offlineMode = false;
+      resizeToWindow();
+      resetFrameTiming();
+      requestAnimationFrame(frame);
+    }
+  });
+  resizeToWindow();
+  (async () => {
+    if (document.fonts && document.fonts.load) {
+      try {
+        await Promise.all([
+          document.fonts.load("700 32px Orbitron"),
+          document.fonts.load("900 84px Orbitron"),
+          document.fonts.load("400 24px Lora"),
+          document.fonts.load("italic 600 48px Lora")
+        ]);
+      } catch (_) {
+      }
+    }
+    newRun();
+    requestAnimationFrame(frame);
+  })();
+})();
+
+</script>
+</body>
+
+</html>
