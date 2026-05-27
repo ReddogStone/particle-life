@@ -91,10 +91,6 @@
       border-color: #ff4f86;
     }
 
-    #btn-mute {
-      padding: 11px 14px;
-    }
-
     #help {
       position: fixed;
       top: 12px;
@@ -136,6 +132,92 @@
     #help.hidden {
       opacity: 0;
     }
+
+    #worldcode {
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      z-index: 15;
+      padding: 6px 10px;
+      background: rgba(20, 24, 40, 0.85);
+      border: 1px solid #46506e;
+      border-radius: 8px;
+      font: 600 13px ui-monospace, Menlo, monospace;
+      color: #cde;
+    }
+
+    #worldcode .wc-label {
+      color: #89a;
+      letter-spacing: 1px;
+    }
+
+    #wc-input {
+      width: 116px;
+      padding: 5px 7px;
+      text-align: center;
+      background: #0d1018;
+      border: 1px solid #2a3450;
+      border-radius: 5px;
+      color: #fff;
+      font: 600 13px ui-monospace, Menlo, monospace;
+    }
+
+    #wc-load,
+    #wc-copy {
+      padding: 5px 11px;
+      background: rgba(40, 48, 78, 0.9);
+      border: 1px solid #46506e;
+      border-radius: 5px;
+      color: #eef;
+      font: 600 12px ui-monospace, Menlo, monospace;
+      cursor: pointer;
+    }
+
+    #wc-load:hover,
+    #wc-copy:hover {
+      border-color: #6a78a8;
+    }
+
+    /* Narrow screens (phones): declutter the top so the World Code bar fits. */
+    @media (max-width: 640px) {
+      #fps {
+        display: none;
+      }
+
+      #worldcode {
+        top: 8px;
+        gap: 6px;
+        padding: 5px 8px;
+        font-size: 11px;
+      }
+
+      #worldcode .wc-label {
+        letter-spacing: 0;
+      }
+
+      #wc-input {
+        width: 78px;
+        padding: 5px 4px;
+        font-size: 12px;
+      }
+
+      #wc-load,
+      #wc-copy {
+        padding: 5px 8px;
+        font-size: 11px;
+      }
+
+      #help {
+        top: 52px;
+        left: 8px;
+        right: 8px;
+        max-width: none;
+      }
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.min.js"></script>
 </head>
@@ -148,16 +230,24 @@
   <div id="progress"></div>
   <div id="fps">— fps</div>
 
+  <div id="worldcode">
+    <span class="wc-label">WORLD CODE</span>
+    <input id="wc-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="World code">
+    <button id="wc-copy" type="button" aria-label="Copy world code">COPY</button>
+    <button id="wc-load" type="button">LOAD</button>
+  </div>
+
   <div id="controls">
     <button id="btn-new" type="button">✨ New</button>
     <button id="btn-record" type="button">● Record</button>
-    <button id="btn-mute" type="button" aria-label="Mute music">🔊</button>
+    <button id="btn-mute" type="button" aria-label="Mute music">🔊 Mute</button>
   </div>
 
   <div id="help">
     <div><b>New</b> — fresh ecosystem (or press <kbd>R</kbd>)</div>
     <div><b>Record</b> — save the run so far as a 1024×1024 video</div>
     <div><b>🔊</b> — mute / unmute the music</div>
+    <div><b>World Code</b> — share yours, or paste one &amp; Load to visit that world</div>
     <div class="note">Recording needs Chrome or Edge. Move the mouse to show this help.</div>
   </div>
 
@@ -205,7 +295,7 @@
       const sync = () => {
         if (wantSound) bgm.play().catch(() => {}); // may be blocked until a gesture
         else bgm.pause();
-        btn.textContent = wantSound ? "🔊" : "🔇";
+        btn.textContent = wantSound ? "🔊 Mute" : "🔇 Unmute";
         btn.setAttribute("aria-label", wantSound ? "Mute music" : "Unmute music");
       };
 
@@ -1147,6 +1237,8 @@
     simTime = 0;
     sim = createSim({ ctx, width: W, height: H, seed: currentSeed });
     document.title = `Particle Life \u2014 seed ${currentSeed}`;
+    const wc = document.getElementById("wc-input");
+    if (wc && document.activeElement !== wc) wc.value = currentSeed;
     resetFrameTiming();
   }
   var STEP_DT = 1 / FPS;
@@ -1255,11 +1347,29 @@
   }
   window.addEventListener("keydown", (e) => {
     if (offlineMode) return;
+    if (e.target.tagName === "INPUT") return;
     liveAudio.resume();
     if (e.key === "r" || e.key === "R") newRun();
     else if (e.key === "s" || e.key === "S") saveSeed();
     else if (e.key === "l" || e.key === "L") jsonInput.click();
     else if (e.key === "m" || e.key === "M") pickMusicFile();
+  });
+  function loadWorldCode() {
+    if (offlineMode) return;
+    liveAudio.resume();
+    const code = parseInt(document.getElementById("wc-input").value, 10);
+    if (Number.isFinite(code) && code > 0) newRun(code >>> 0);
+  }
+  document.getElementById("wc-load")?.addEventListener("click", loadWorldCode);
+  document.getElementById("wc-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadWorldCode();
+  });
+  var wcCopyBtn = document.getElementById("wc-copy");
+  wcCopyBtn?.addEventListener("click", () => {
+    navigator.clipboard?.writeText(document.getElementById("wc-input").value).catch(() => {
+    });
+    wcCopyBtn.textContent = "COPIED";
+    setTimeout(() => wcCopyBtn.textContent = "COPY", 1e3);
   });
   async function runOffline(runJson, { dpr, filename } = {}) {
     offlineMode = true;
